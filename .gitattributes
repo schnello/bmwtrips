@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.png binary
+
+# Keep bundled Leaflet bytes unchanged: index.html checks their SRI hashes.
+assets/leaflet/leaflet.css -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+assets/leaflet/leaflet.js -text
