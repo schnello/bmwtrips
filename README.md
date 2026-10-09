@@ -1,8 +1,8 @@
-# Seraph · BMW iX1
+# Lucifer · BMW iX1
 
 Ein helles Dashboard für Fahrten und Ladevorgänge eines weißen BMW iX1. Der Aufbau entspricht der Tesla-Seite „Lilith“: Streckenauswahl, vier Statistiken, Tagesverbrauch, Fahrten und Ladungen nach Datum, Akkubalken, Routenkarte, Ladekurve und CSV-Export.
 
-„Seraph“ verwendet weiße Flächen, blaue Akzente und ein goldenes Engelszeichen. Das Hintergrundbild zeigt den weißen iX1 direkt von vorne in einer hellen Wolkenlandschaft. Es wurde mit integrierter Bildgenerierung erstellt und ist kein Foto des konkreten Fahrzeugs.
+„Lucifer“ verwendet weiße Flächen, blaue Akzente und ein goldenes Engelszeichen. Das Hintergrundbild zeigt den weißen iX1 direkt von vorne in einer hellen Wolkenlandschaft. Es wurde mit integrierter Bildgenerierung erstellt und ist kein Foto des konkreten Fahrzeugs.
 
 ## Dateien
 

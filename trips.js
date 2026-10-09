@@ -1,4 +1,4 @@
-// Seraph: BMW-Adaption der Tesla trips.html vom 07.10.2026.
+// Lucifer: BMW-Adaption der Tesla trips.html vom 07.10.2026.
 // Keine Beispieldaten, kein Browser-Zugriff auf InfluxDB.
 function isNumber(value) { return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value)); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
