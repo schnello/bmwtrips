@@ -559,3 +559,56 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline:2px solid 
 [hidden] { display:none!important; }
 @media(max-width:600px) { .subtitle { letter-spacing:2px; line-height:1.8; } .range-bar { gap:8px; } .stat-label { line-height:1.7; } .bg-layer { background-position:center; } .trip-main { gap:12px; } .location-name { font-size:.8rem; } .range-select,button { min-height:44px; } .consumption-chart-label { font-size:22px; } .curve-axis-text { font-size:24px; } .curve-axis-label { font-size:22px; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none!important; } }
+
+/* =====================================================
+   ZUGANGSSCHLÜSSEL
+   ===================================================== */
+
+.access-box {
+    max-width: 420px;
+    margin: 30px auto;
+    padding: 24px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    text-align: center;
+}
+
+.access-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--deep-blue);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+
+.access-text {
+    margin: 10px 0 18px;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.access-form {
+    display: flex;
+    gap: 8px;
+}
+
+.access-input {
+    flex: 1;
+    padding: 9px 10px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.access-button {
+    padding: 9px 16px;
+    background: var(--sky-blue);
+    border: 1px solid var(--deep-blue);
+    border-radius: 6px;
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}

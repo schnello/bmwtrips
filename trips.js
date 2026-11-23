@@ -8,8 +8,62 @@ function locationFor(trip,point) {
     const coordinate=getTripCoordinates(trip,point);
     return coordinate ? 'GPS · '+formatNumber(coordinate.latitude,5)+' / '+formatNumber(coordinate.longitude,5) : 'Position nicht aufgezeichnet';
 }
+/*
+ * ============================================================
+ * ZUGANGSSCHLÜSSEL
+ * ============================================================
+ *
+ * Die Daten-API verlangt den Header „X-Trips-Key“ (gleicher Schlüssel
+ * wie die Tesla-Seite). Der Schlüssel kommt einmalig über den Link
+ * …/trips#<schlüssel>, wird im Browser gespeichert und aus der
+ * Adresszeile entfernt. Der Teil nach „#“ geht nie an den Server.
+ */
+
+const TRIPS_KEY_STORAGE = 'luciferTripsKey';
+
+function storeTripsKey(value) {
+    try { localStorage.setItem(TRIPS_KEY_STORAGE, value); } catch (error) { window._tripsKeyFallback = value; }
+}
+function readKeyFromUrl() {
+    const hashKey = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
+    if (hashKey) {
+        storeTripsKey(hashKey);
+        history.replaceState(null, '', location.pathname + location.search);
+    }
+}
+function getTripsKey() {
+    try { return localStorage.getItem(TRIPS_KEY_STORAGE) || window._tripsKeyFallback || ''; }
+    catch (error) { return window._tripsKeyFallback || ''; }
+}
+class AccessDeniedError extends Error {
+    constructor() { super('Kein Zugriff'); this.name = 'AccessDeniedError'; }
+}
+function showAccessForm() {
+    const container = document.getElementById('tripContainer');
+    container.innerHTML = `
+        <div class="access-box">
+            <div class="access-title">Kein Zugriff</div>
+            <div class="access-text">Bitte den Link mit Schlüssel öffnen oder den Schlüssel hier einfügen.</div>
+            <form class="access-form">
+                <input type="password" class="access-input" autocomplete="off" placeholder="Schlüssel" aria-label="Schlüssel">
+                <button type="submit" class="access-button">Öffnen</button>
+            </form>
+        </div>`;
+    container.querySelector('.access-form').addEventListener('submit', event => {
+        event.preventDefault();
+        const value = container.querySelector('.access-input').value.trim();
+        if (!value) return;
+        storeTripsKey(value);
+        loadHistory(true);
+    });
+}
+readKeyFromUrl();
+
 async function bmwFetch(url,options={}) {
-    const response=await fetch(url,{...options,cache:'no-store',signal:AbortSignal.timeout(20000)});
+    const key=getTripsKey();
+    const headers={...(options.headers||{}),...(key?{'X-Trips-Key':key}:{})};
+    const response=await fetch(url,{...options,headers,cache:'no-store',signal:AbortSignal.timeout(20000)});
+    if (response.status===403) throw new AccessDeniedError();
     if (!response.ok) throw new Error('HTTP '+response.status);
     if (!(response.headers.get('content-type')||'').includes('application/json')) throw new Error('Antwort ist kein JSON');
     return response;
@@ -1573,6 +1627,11 @@ async function loadHistory(force = false) {
         historyError = error;
         ['totalTrips','totalDistance','averageConsumption','distanceSinceLastCharge'].forEach(id=>document.getElementById(id).textContent='–');
         document.getElementById('consumptionTrend').innerHTML='<div class="message">Verbrauchskurve noch nicht verfügbar.</div>';
+        if (error.name==='AccessDeniedError') {
+            showAccessForm();
+            state.textContent = 'Kein Zugriff – Schlüssel fehlt oder ist falsch.';
+            return;
+        }
         document.getElementById('tripContainer').innerHTML='<div class="message">BMW-Daten sind derzeit nicht erreichbar. Bitte später über „Aktualisieren“ erneut laden.</div>';
         state.textContent = error.name==='TimeoutError' || error.name==='AbortError' ? 'Zeitüberschreitung beim Laden der BMW-Daten.' : 'BMW-API: '+error.message;
     }
