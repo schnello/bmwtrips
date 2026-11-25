@@ -379,6 +379,19 @@ body {
     color: var(--muted);
 }
 
+.charge-cost {
+    margin-top: 4px;
+    margin-left: 18px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.cycle-info {
+    border-top: 0;
+    padding-top: 0;
+}
+
 .charge-type {
     padding: 5px 9px;
     border: 1px solid currentColor;

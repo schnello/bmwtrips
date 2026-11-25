@@ -2,6 +2,19 @@
 // Keine Beispieldaten, kein Browser-Zugriff auf InfluxDB.
 function isNumber(value) { return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value)); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Ladekosten (aus der API: cost_eur, price_source, price_eur_kwh, cost_basis)
+const CHARGE_PRICE_LABELS = { home: 'Zuhause', work: 'Arbeit Frankenburg', public_dc_flat: 'DC Pauschalpreis' };
+function chargeCostLine(session) {
+    if (!session || !isNumber(session.cost_eur)) return '';
+    const parts = [formatNumber(session.cost_eur, 2) + ' €'];
+    const label = CHARGE_PRICE_LABELS[session.price_source];
+    if (label) parts.push(label);
+    if (Number(session.price_eur_kwh) > 0) {
+        parts.push(formatNumber(session.price_eur_kwh, 2) + ' €/kWh' + (session.cost_basis === 'grid' ? ' · Netz' : ''));
+    }
+    return '<div class="charge-cost">' + escapeHtml(parts.join(' · ')) + '</div>';
+}
 function locationFor(trip,point) {
     const label=formatLocationName(trip[point+'_location_name'],trip[point+'_street'],trip[point+'_house_number'],trip[point+'_city'],trip[point+'_country']);
     if (label !== 'Unbekannt') return label;
@@ -589,10 +602,20 @@ function renderHistory(trips, chargingSessions, allTrips, allChargingSessions) {
     const estimatedTrips = safeTrips.filter(trip => isNumber(trip.avg_kwh_100km) && isNumber(trip.consumed_kwh) && Number(trip.distance_km) > 0);
     const estimatedDistance = estimatedTrips.reduce((sum,t) => sum + Number(t.distance_km),0);
     const totalEnergy = estimatedTrips.reduce((sum,t) => sum + Number(t.consumed_kwh),0);
-    const averageConsumption = estimatedDistance > 0 ? totalEnergy / estimatedDistance * 100 : null;
-    document.getElementById('averageConsumption').title = estimatedDistance > 0
-        ? 'Schätzung für ' + formatNumber(estimatedDistance) + ' von ' + formatNumber(totalDistance) + ' km; Fahrten ohne belastbaren Verbrauch fehlen im Mittel.'
-        : 'Noch keine ausreichend aufgelösten Verbrauchswerte vorhanden.';
+    // Genauer: Verbrauch über ganze Ladezyklen (km und Ladestand zwischen zwei Ladungen),
+    // weil BMW Ladestand und Kilometerstand nur ganzzahlig liefert.
+    const cycleSessions = safeChargingSessions.filter(s => isNumber(s.cycle_kwh_100km) && Number(s.cycle_km) > 0);
+    const cycleDistance = cycleSessions.reduce((sum, s) => sum + Number(s.cycle_km), 0);
+    const cycleEnergy = cycleSessions.reduce((sum, s) => sum + Number(s.cycle_kwh_100km) * Number(s.cycle_km) / 100, 0);
+
+    const averageConsumption = cycleDistance > 0
+        ? cycleEnergy / cycleDistance * 100
+        : estimatedDistance > 0 ? totalEnergy / estimatedDistance * 100 : null;
+    document.getElementById('averageConsumption').title = cycleDistance > 0
+        ? 'Aus ' + cycleSessions.length + ' Ladezyklen über ' + formatNumber(cycleDistance) + ' km (Ladestand zwischen zwei Ladungen).'
+        : estimatedDistance > 0
+            ? 'Schätzung für ' + formatNumber(estimatedDistance) + ' von ' + formatNumber(totalDistance) + ' km; Fahrten ohne belastbaren Verbrauch fehlen im Mittel.'
+            : 'Noch keine ausreichend aufgelösten Verbrauchswerte vorhanden.';
 
     const completeTrips = Array.isArray(allTrips) ? allTrips : safeTrips;
     const completeChargingSessions = Array.isArray(allChargingSessions)
@@ -1331,6 +1354,8 @@ function createChargingCard(session) {
                 <div class="charge-time">
                     ${startTime} → ${endTime}
                 </div>
+
+                ${chargeCostLine(session)}
             </div>
 
             <div class="charge-type">
@@ -1414,8 +1439,21 @@ function createChargingCard(session) {
     const phases = Array.isArray(session.phases) ? session.phases : [];
     const phaseDetails = document.createElement("div");
     phaseDetails.className = "phase-info";
-    phaseDetails.textContent = `${phases.length || session.phase_count || 1} Ladephase(n) · Ziel ${formatNumber(session.start_target_pct,0)} % → ${formatNumber(session.end_target_pct,0)} % · Netzbezug nicht gemessen`;
+    const gridText = isNumber(session.grid_energy_kwh) && Number(session.grid_energy_kwh) > 0
+        ? `Netz ${formatNumber(session.grid_energy_kwh, 2)} kWh (Wallbox)` +
+          (isNumber(session.measured_loss_factor) ? ` · Verluste ${formatNumber((Number(session.measured_loss_factor) - 1) * 100, 0)} %` : "")
+        : "Netzbezug nicht gemessen";
+    phaseDetails.textContent = `${phases.length || session.phase_count || 1} Ladephase(n) · Ziel ${formatNumber(session.start_target_pct,0)} % → ${formatNumber(session.end_target_pct,0)} % · ${gridText}`;
     card.appendChild(phaseDetails);
+
+    // Verbrauch seit der vorigen Ladung (Ladezyklus)
+    if (isNumber(session.cycle_km) && Number(session.cycle_km) > 0) {
+        const cycle = document.createElement("div");
+        cycle.className = "phase-info cycle-info";
+        cycle.textContent = `Seit letzter Ladung: ${formatNumber(session.cycle_km, 0)} km · ${formatNumber(session.cycle_used_pct, 0)} % Akku` +
+            (isNumber(session.cycle_kwh_100km) ? ` · ${formatNumber(session.cycle_kwh_100km, 1)} kWh/100 km` : " · zu kurz für einen Verbrauchswert");
+        card.appendChild(cycle);
+    }
 
     if (session.session_id) {
         const curveSection = document.createElement("div");
