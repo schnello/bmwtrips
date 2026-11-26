@@ -8,8 +8,6 @@ const CHARGE_PRICE_LABELS = { home: 'Zuhause', work: 'Arbeit Frankenburg', publi
 function chargeCostLine(session) {
     if (!session || !isNumber(session.cost_eur)) return '';
     const parts = [formatNumber(session.cost_eur, 2) + ' €'];
-    const label = CHARGE_PRICE_LABELS[session.price_source];
-    if (label) parts.push(label);
     if (Number(session.price_eur_kwh) > 0) {
         parts.push(formatNumber(session.price_eur_kwh, 2) + ' €/kWh' + (session.cost_basis === 'grid' ? ' · Netz' : ''));
     }
@@ -350,6 +348,50 @@ function formatLocationName(name, street, houseNumber, city, country) {
  * ============================================================
  */
 
+
+/*
+ * ============================================================
+ * KURZE ORTSNAMEN / VERBRAUCHSBEWERTUNG
+ * ============================================================
+ *
+ * compactPlace: „Ort/Straße, Gemeinde“ statt der vollen Adresse
+ * (Land, PLZ, Bezirk, Bundesland und Ortsteile fallen weg).
+ * Die volle Adresse steht im Tooltip.
+ */
+
+const PLACE_DROP = /^(Österreich|Deutschland|Italia|Schweiz|Suisse|Slovenija|Česko|Magyarország|Oberösterreich|Niederösterreich|Steiermark|Kärnten|Tirol|Vorarlberg|Burgenland|Bayern|Baden-Württemberg|Bezirk .*|Gemeinde .*|Landkreis .*|Kreis .*|Regierungsbezirk .*|\d{4,5})$/;
+
+function compactPlace(fullName) {
+    // GPS-Ersatztext („GPS · 48,00000 / 13,00000“) enthält Dezimalkommas – unverändert lassen
+    if (/^GPS/.test(String(fullName || ""))) return String(fullName);
+    let parts = String(fullName || "").split(",").map(part => part.trim()).filter(Boolean);
+    if (parts.length <= 1) return parts[0] || "Unbekannt";
+    // „1, Hauptplatz, …“ → „Hauptplatz 1, …“
+    if (/^\d+[a-zA-Z]?$/.test(parts[0]) && parts[1]) parts = [`${parts[1]} ${parts[0]}`, ...parts.slice(2)];
+    const kept = parts.filter((part, index) => index === 0 || !PLACE_DROP.test(part));
+    const first = kept[0].replace(/\s+(GmbH|AG|OG|KG|e\.U\.)(\s*&\s*Co\.?\s*(KG|OG))?$/i, "");
+    const town = kept.length > 1 ? kept[kept.length - 1] : "";
+    return town && town !== first ? `${first}, ${town}` : first;
+}
+
+// Ø-Verbrauch der gewählten Strecke, gesetzt in renderHistory
+let selectionAverageConsumption = null;
+
+function consumptionClass(value) {
+    const v = Number(value), avg = selectionAverageConsumption;
+    if (!isNumber(value) || !avg) return "";
+    if (v <= avg * 0.9) return "fact-good";
+    if (v >= avg * 1.2) return "fact-bad";
+    return "";
+}
+
+function consumptionTitle(value) {
+    const avg = selectionAverageConsumption;
+    if (!isNumber(value) || !avg) return "Verbrauch (geschätzt)";
+    const diff = Math.round((Number(value) / avg - 1) * 100);
+    return `Verbrauch (geschätzt) · Ø der Auswahl ${formatNumber(avg)} kWh/100 km (${diff > 0 ? "+" : ""}${diff} %)`;
+}
+
 function formatDate(dateString) {
 
     const date =
@@ -485,7 +527,18 @@ function getTripCoordinates(trip, prefix) {
 }
 
 
+let lastTrendTrips = null;
+let trendResizeTimer = null;
+
+window.addEventListener("resize", () => {
+    clearTimeout(trendResizeTimer);
+    trendResizeTimer = setTimeout(() => {
+        if (lastTrendTrips) renderConsumptionTrend(lastTrendTrips);
+    }, 200);
+});
+
 function renderConsumptionTrend(trips) {
+    lastTrendTrips = trips;
     const container = document.getElementById("consumptionTrend");
     const daily = new Map();
 
@@ -521,12 +574,16 @@ function renderConsumptionTrend(trips) {
         return;
     }
 
-    const width = 760;
-    const height = 130;
-    const padding = { top: 12, right: 18, bottom: 24, left: 38 };
+    // in echter Breite zeichnen, damit die Schrift auf dem Handy lesbar bleibt
+    const width = Math.round(Math.min(1000, Math.max(300, (container.clientWidth || 760) - 36)));
+    const height = 150;
+    const padding = { top: 22, right: 18, bottom: 30, left: 38 };
     const values = points.map(point => point.consumption);
-    const minValue = Math.max(0, Math.floor(Math.min(...values) - 2));
-    const maxValue = Math.ceil(Math.max(...values) + 2);
+    const totalEnergy = points.reduce((sum, point) => sum + point.energy, 0);
+    const totalDistance = points.reduce((sum, point) => sum + point.distance, 0);
+    const average = totalDistance > 0 ? totalEnergy / totalDistance * 100 : null;
+    const minValue = Math.max(0, Math.floor(Math.min(...values) - 3));
+    const maxValue = Math.ceil(Math.max(...values) + 3);
     const valueRange = Math.max(1, maxValue - minValue);
     const x = index => padding.left +
         (points.length === 1
@@ -537,27 +594,33 @@ function renderConsumptionTrend(trips) {
     const path = points.map((point, index) =>
         `${index === 0 ? "M" : "L"} ${x(index).toFixed(2)} ${y(point.consumption).toFixed(2)}`
     ).join(" ");
-    const firstDate = points[0].date.toLocaleDateString("de-AT", { day: "2-digit", month: "2-digit" });
-    const lastDate = points[points.length - 1].date.toLocaleDateString("de-AT", { day: "2-digit", month: "2-digit" });
+    const dayLabel = date => date.toLocaleDateString("de-AT", { weekday: "short" }).replace(".", "") +
+        " " + date.toLocaleDateString("de-AT", { day: "numeric", month: "numeric" });
+    const spacing = points.length > 1 ? (width - padding.left - padding.right) / (points.length - 1) : width;
+    const everyNth = Math.max(1, Math.ceil(64 / spacing));
 
     container.innerHTML = `
         <div class="consumption-trend-header">
             <span>Verbrauch pro Tag · geschätzt</span>
-            <span>${formatNumber(values[values.length - 1])} kWh / 100 km</span>
+            <span>${average ? `Ø ${formatNumber(average)} kWh / 100 km · ${formatNumber(totalDistance, 0)} km` : "–"}</span>
         </div>
         <svg class="consumption-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Verbrauchskurve der letzten Tage">
             <line class="consumption-chart-grid" x1="${padding.left}" y1="${y(maxValue)}" x2="${width - padding.right}" y2="${y(maxValue)}"></line>
             <line class="consumption-chart-grid" x1="${padding.left}" y1="${y(minValue)}" x2="${width - padding.right}" y2="${y(minValue)}"></line>
             <text class="consumption-chart-label" x="0" y="${y(maxValue) + 4}">${formatNumber(maxValue, 0)}</text>
             <text class="consumption-chart-label" x="0" y="${y(minValue) + 4}">${formatNumber(minValue, 0)}</text>
+            ${average ? `
+                <line class="consumption-chart-average" x1="${padding.left}" y1="${y(average)}" x2="${width - padding.right}" y2="${y(average)}"></line>
+                <text class="consumption-chart-label" x="0" y="${y(average) + 4}">Ø</text>
+            ` : ""}
             <path class="consumption-chart-line" d="${path}"></path>
             ${points.map((point, index) => `
                 <circle class="consumption-chart-dot" cx="${x(index)}" cy="${y(point.consumption)}" r="4">
-                    <title>${point.date.toLocaleDateString("de-AT")}: ${formatNumber(point.consumption)} kWh / 100 km</title>
+                    <title>${point.date.toLocaleDateString("de-AT")}: ${formatNumber(point.consumption)} kWh / 100 km · ${formatNumber(point.distance)} km</title>
                 </circle>
+                <text class="consumption-chart-value" x="${x(index)}" y="${y(point.consumption) - 9}" text-anchor="middle">${formatNumber(point.consumption, 0)}</text>
+                ${index % everyNth === (points.length - 1) % everyNth ? `<text class="consumption-chart-label" x="${x(index)}" y="${height - 6}" text-anchor="${points.length === 1 ? "middle" : index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}">${dayLabel(point.date)}</text>` : ""}
             `).join("")}
-            <text class="consumption-chart-label" x="${padding.left}" y="${height - 3}">${firstDate}</text>
-            <text class="consumption-chart-label" x="${width - padding.right}" y="${height - 3}" text-anchor="end">${lastDate}</text>
         </svg>
     `;
 }
@@ -680,6 +743,8 @@ function renderHistory(trips, chargingSessions, allTrips, allChargingSessions) {
             ? "–"
             : formatNumber(distanceSinceLastCharge);
 
+    selectionAverageConsumption = averageConsumption > 0 ? averageConsumption : null;
+
     renderConsumptionTrend(safeTrips);
 
 
@@ -767,10 +832,32 @@ function renderHistory(trips, chargingSessions, allTrips, allChargingSessions) {
         title.className =
             "day-title";
 
-        title.textContent =
-            formatDate(
-                dayItems[0].sort_time
-            );
+        const dateLabel = document.createElement("span");
+        dateLabel.className = "day-date";
+        dateLabel.textContent = formatDate(dayItems[0].sort_time);
+        title.appendChild(dateLabel);
+
+        // Tageszusammenfassung: Fahrten, km, kWh (geschätzt), € der Ladungen
+        const dayTrips = dayItems.filter(item => item.history_type === "trip");
+        const dayDistance = dayTrips.reduce((sum, item) => sum + Number(item.data.distance_km || 0), 0);
+        const dayEnergyTrips = dayTrips.filter(item => isNumber(item.data.consumed_kwh));
+        const dayEnergy = dayEnergyTrips.reduce((sum, item) => sum + Number(item.data.consumed_kwh), 0);
+        const dayCostSessions = dayItems.filter(item => item.history_type === "charging" && isNumber(item.data.cost_eur));
+        const dayCost = dayCostSessions.reduce((sum, item) => sum + Number(item.data.cost_eur), 0);
+        const summaryParts = [];
+        if (dayTrips.length > 0) {
+            summaryParts.push(`${dayTrips.length} ${dayTrips.length === 1 ? "Fahrt" : "Fahrten"}`);
+            summaryParts.push(`${formatNumber(dayDistance, 1)} km`);
+            if (dayEnergyTrips.length > 0) summaryParts.push(`≈${formatNumber(dayEnergy, 1)} kWh`);
+        }
+        if (dayCostSessions.length > 0) summaryParts.push(`${formatNumber(dayCost, 2)} €`);
+        if (summaryParts.length > 0) {
+            const summary = document.createElement("span");
+            summary.className = "day-summary";
+            summary.textContent = summaryParts.join(" · ");
+            summary.title = "Fahrten, km und geschätzte kWh des Tages" + (dayCostSessions.length > 0 ? ", € = Ladekosten" : "");
+            title.appendChild(summary);
+        }
 
         section.appendChild(title);
 
@@ -929,210 +1016,42 @@ const batteryDirection =
     const endCoordinates = getTripCoordinates(trip, "end");
     const tripId = trip.trip_id ?? trip.start_time_ms ?? null;
     const hasMap = startCoordinates || endCoordinates || Number(trip.route_points_count) > 0;
-    const mapMarkup = hasMap
-        ? `
-            <div class="trip-map">
-                <div class="trip-map-header">
-                    <span class="trip-map-title">Start und Ziel</span>
-                    <button type="button" class="trip-map-toggle" aria-expanded="false">Karte anzeigen</button>
-                </div>
-                <div class="trip-map-canvas" role="img" aria-label="Karte mit Start- und Zielposition" hidden></div>
-            </div>
-        `
-        : "";
-
+    const est = flag => flag === false ? "" : "≈";
 
     card.innerHTML = `
-
         <div class="trip-main">
-
             <div class="route">
-
-                <!-- ZIEL OBEN -->
-
-                <div class="location">
-
+                <div class="stop">
+                    <span class="stop-time">${startTime}</span>
+                    <span class="dot dot-start"></span>
+                    <span class="location-name" title="${startLocation}">${escapeHtml(compactPlace(locationFor(trip, "start")))}</span>
+                </div>
+                <div class="stop">
+                    <span class="stop-time">${endTime}</span>
                     <span class="dot"></span>
-
-                    <span class="location-name">
-                        ${endLocation}
-                    </span>
-
+                    <span class="location-name" title="${endLocation}">${escapeHtml(compactPlace(locationFor(trip, "end")))}</span>
                 </div>
-
-
-                <div class="location-time">
-                    ${endTime}
-                </div>
-
-
-                <div class="route-line"></div>
-
-
-                <!-- START UNTEN -->
-
-                <div class="location">
-
-                    <span class="dot"></span>
-
-                    <span class="location-name">
-                        ${startLocation}
-                    </span>
-
-                </div>
-
-
-                <div class="location-time">
-                    ${startTime}
-                </div>
-
             </div>
-
-
             <div class="distance">
-
-                <div class="distance-value">
-
-                    ${formatNumber(
-                        trip.distance_km
-                    )}
-
-                </div>
-
-
-                <div class="distance-unit">
-                    KM
-                </div>
-
+                <span class="distance-value">${formatNumber(trip.distance_km)}</span>
+                <span class="distance-unit">km</span>
             </div>
-
         </div>
 
-
-        <div class="metrics">
-
-            <div class="metric">
-
-                <div class="metric-value">
-
-                    ${formatDuration(
-                        durationSeconds
-                    )}
-
-                </div>
-
-
-                <div class="metric-label">
-                    Dauer · ca.
-                </div>
-
-            </div>
-
-
-            <div class="metric">
-
-                <div class="metric-value">
-
-                    ${formatNumber(
-                        trip.avg_kwh_100km
-                    )}
-
-                </div>
-
-
-                <div class="metric-label">
-                    kWh / 100 km · ca.
-                </div>
-
-            </div>
-
-
-            <div class="metric">
-
-                <div class="metric-value">
-
-                    ${formatNumber(
-                        trip.avg_speed_kmh,
-                        0
-                    )}
-
-                </div>
-
-
-                <div class="metric-label">
-                    Ø km/h · ca.
-                </div>
-
-            </div>
-
-
-            <div class="metric">
-
-                <div class="metric-value">
-
-                    ${formatNumber(
-                        trip.consumed_kwh
-                    )}
-
-                </div>
-
-
-                <div class="metric-label">
-                    kWh · ca.
-                </div>
-
-            </div>
-
+        <div class="facts">
+            <span class="fact" title="Fahrzeit${trip.duration_is_estimated === false ? "" : " (geschätzt)"}"><b>${est(trip.duration_is_estimated)}${formatDuration(durationSeconds)}</b></span>
+            <span class="fact ${consumptionClass(trip.avg_kwh_100km)}" title="${consumptionTitle(trip.avg_kwh_100km)}"><b>${est(trip.energy_is_estimated)}${formatNumber(trip.avg_kwh_100km)}</b> kWh/100 km</span>
+            <span class="fact" title="Durchschnitt (geschätzt)"><b>${formatNumber(trip.avg_speed_kmh, 0)}</b> km/h</span>
+            <span class="fact" title="Energie (geschätzt aus Ladestand)"><b>${est(trip.energy_is_estimated)}${formatNumber(trip.consumed_kwh)}</b> kWh</span>
+            <span class="fact" title="Akku −${formatNumber(batteryUsed, 0)} %"><b>${formatNumber(trip.start_battery_pct, 0)} → ${formatNumber(trip.end_battery_pct, 0)}</b> %</span>
+            ${hasMap ? `<span class="trip-map-title"></span><button type="button" class="trip-map-toggle" aria-expanded="false">Karte</button>` : ""}
         </div>
 
-
-        <div class="battery">
-
-            <div class="battery-header">
-
-                <span>
-                    BATTERIE
-                </span>
-
-
-                <span>
-
-                    ${formatNumber(
-                        trip.start_battery_pct,
-                        0
-                    )}
-                    %
-
-                    →
-
-                    ${formatNumber(
-                        trip.end_battery_pct,
-                        0
-                    )}
-                    %
-
-                    &nbsp;
-
-                    (${formatNumber(
-                        batteryUsed,
-                        1
-                    )} %)
-
-                </span>
-
-            </div>
-
-
-<div class="battery-bar">
-    <div
-        class="battery-range ${batteryDirection}"
-        style="left:${batteryLeft}%; width:${batteryWidth}%;"
-    ></div>
-</div>
+        <div class="battery-bar" title="Akku ${formatNumber(trip.start_battery_pct, 0)} % → ${formatNumber(trip.end_battery_pct, 0)} %">
+            <div class="battery-range ${batteryDirection}" style="left:${batteryLeft}%; width:${batteryWidth}%;"></div>
         </div>
 
-        ${mapMarkup}
-
+        ${hasMap ? `<div class="trip-map-canvas" role="img" aria-label="Karte mit Start- und Zielposition" hidden></div>` : ""}
     `;
 
     if (!isNumber(trip.start_battery_pct) || !isNumber(trip.end_battery_pct)) card.querySelector(".battery-bar").hidden=true;
@@ -1144,7 +1063,7 @@ const batteryDirection =
             const willOpen = mapCanvas.hidden;
             mapCanvas.hidden = !willOpen;
             mapToggle.setAttribute("aria-expanded", String(willOpen));
-            mapToggle.textContent = willOpen ? "Karte schließen" : "Karte anzeigen";
+            mapToggle.textContent = willOpen ? "Karte ✕" : "Karte";
 
             if (willOpen && !mapCanvas._leafletMap) {
                 if (typeof L === "undefined") {
@@ -1204,7 +1123,7 @@ const batteryDirection =
             }
 
             mapCanvas._routeLoading = true;
-            mapTitle.textContent = "Route wird geladen ...";
+            mapTitle.textContent = "Route lädt …";
 
             try {
                 const response = await bmwFetch(
@@ -1244,16 +1163,16 @@ const batteryDirection =
                         maxZoom: 16
                     });
 
-                    mapTitle.textContent = `GPS-Aufzeichnung · ${routePoints.length} Punkte · grobe Verbindung`;
+                    mapTitle.textContent = `GPS · ${routePoints.length} Punkte (grob)`;
                 } else {
-                    mapTitle.textContent = "Start und Ziel · keine Route vorhanden";
+                    mapTitle.textContent = "keine Route";
                 }
 
                 mapCanvas._routeLoaded = true;
 
             } catch (error) {
                 console.error("Trip Route API Fehler:", error);
-                mapTitle.textContent = "Start und Ziel · Route nicht verfügbar";
+                mapTitle.textContent = "Route nicht verfügbar";
 
             } finally {
                 mapCanvas._routeLoading = false;
@@ -1281,16 +1200,6 @@ function createChargingCard(session) {
     const chargeType = ["AC","DC"].includes(String(session.charge_type).toUpperCase()) ? String(session.charge_type).toUpperCase() : "Unbekannt";
 
     const typeClass = chargeType === "DC" ? "charge-dc" : chargeType === "AC" ? "charge-ac" : "charge-unknown";
-
-    const batteryColor =
-        chargeType === "DC"
-            ? "#b99954"
-            : "#4b9877";
-
-    const batteryGlow =
-        chargeType === "DC"
-            ? "rgba(255, 212, 59, 0.6)"
-            : "rgba(56, 193, 114, 0.6)";
 
     card.className =
         `trip charging-card ${typeClass}`;
@@ -1341,126 +1250,69 @@ function createChargingCard(session) {
         isNumber(session.charged_battery_pct) ? Number(session.charged_battery_pct) : null;
 
 
-    card.innerHTML = `
-
-        <div class="charge-main">
-
-            <div>
-                <div class="charge-heading">
-                    <span class="charge-dot"></span>
-                    <span>${chargeType} LADEN${session.completed === false ? " · " + (session.status === "charging" ? "läuft" : "angeschlossen") : ""}${session.partial === true ? " · Teilaufzeichnung" : ""}</span>
-                </div>
-
-                <div class="charge-time">
-                    ${startTime} → ${endTime}
-                </div>
-
-                ${chargeCostLine(session)}
-            </div>
-
-            <div class="charge-type">
-                ${chargeType}
-            </div>
-
-        </div>
-
-
-        <div class="metrics">
-
-            <div class="metric">
-                <div class="metric-value">
-                    ${formatDuration(session.duration_seconds)}
-                </div>
-                <div class="metric-label">
-                    Aktiv geladen
-                </div>
-            </div>
-
-            <div class="metric">
-                <div class="metric-value">
-                    ${formatNumber(session.charged_energy_kwh, 2)}
-                </div>
-                <div class="metric-label">
-                    kWh im Akku · ca.
-                </div>
-            </div>
-
-            <div class="metric">
-                <div class="metric-value">
-                    ${formatNumber(session.max_power_kw, 1)}
-                </div>
-                <div class="metric-label">
-                    Max kW · gemeldet
-                </div>
-            </div>
-
-            <div class="metric">
-                <div class="metric-value">
-                    ${formatDuration(session.connected_seconds)}
-                </div>
-                <div class="metric-label">
-                    Angeschlossen
-                </div>
-            </div>
-
-        </div>
-
-
-        <div class="battery">
-
-            <div class="battery-header">
-
-                <span>
-                    BATTERIE
-                </span>
-
-                <span>
-                    ${formatNumber(session.start_battery_pct, 0)} %
-                    →
-                    ${formatNumber(session.end_battery_pct, 0)} %
-                    &nbsp;
-                    (+${formatNumber(chargedBatteryPct, 1)} %)
-                </span>
-
-            </div>
-
-            <div class="battery-bar">
-                <div
-                    class="battery-range ${typeClass}"
-                    style="left:${batteryLeft}%; width:${batteryWidth}%; background:${batteryColor}; box-shadow:0 0 5px ${batteryGlow};"
-                ></div>
-            </div>
-
-        </div>
-    `;
-
-
-    if (!isNumber(session.start_battery_pct) || !isNumber(session.end_battery_pct)) card.querySelector(".battery-bar").hidden=true;
-    const phases = Array.isArray(session.phases) ? session.phases : [];
-    const phaseDetails = document.createElement("div");
-    phaseDetails.className = "phase-info";
+    const statusText = session.completed === false
+        ? (session.status === "charging" ? " · läuft" : " · angeschlossen")
+        : "";
+    const placeLabel = CHARGE_PRICE_LABELS[session.price_source] || "";
+    const activeSeconds = isNumber(session.duration_seconds) ? Number(session.duration_seconds) : 0;
+    const averagePower = activeSeconds > 600 && Number(session.charged_energy_kwh) > 0
+        ? Number(session.charged_energy_kwh) / (activeSeconds / 3600) : null;
     const gridText = isNumber(session.grid_energy_kwh) && Number(session.grid_energy_kwh) > 0
         ? `Netz ${formatNumber(session.grid_energy_kwh, 2)} kWh (Wallbox)` +
           (isNumber(session.measured_loss_factor) ? ` · Verluste ${formatNumber((Number(session.measured_loss_factor) - 1) * 100, 0)} %` : "")
-        : "Netzbezug nicht gemessen";
-    phaseDetails.textContent = `${phases.length || session.phase_count || 1} Ladephase(n) · Ziel ${formatNumber(session.start_target_pct,0)} % → ${formatNumber(session.end_target_pct,0)} % · ${gridText}`;
-    card.appendChild(phaseDetails);
+        : "";
+    const cycleText = isNumber(session.cycle_km) && Number(session.cycle_km) > 0
+        ? `Seit voriger Ladung ${formatNumber(session.cycle_km, 0)} km · ${formatNumber(session.cycle_used_pct, 0)} % Akku` +
+          (isNumber(session.cycle_kwh_100km) ? ` · ${formatNumber(session.cycle_kwh_100km, 1)} kWh/100 km` : "")
+        : "";
+    const phases = Array.isArray(session.phases) ? session.phases : [];
+    const phaseCount = phases.length || session.phase_count || 1;
+    const targetText = isNumber(session.end_target_pct)
+        ? (isNumber(session.start_target_pct) && Number(session.start_target_pct) !== Number(session.end_target_pct)
+            ? `Ziel ${formatNumber(session.start_target_pct, 0)} → ${formatNumber(session.end_target_pct, 0)} %`
+            : `Ziel ${formatNumber(session.end_target_pct, 0)} %`)
+        : "";
 
-    // Verbrauch seit der vorigen Ladung (Ladezyklus)
-    if (isNumber(session.cycle_km) && Number(session.cycle_km) > 0) {
-        const cycle = document.createElement("div");
-        cycle.className = "phase-info cycle-info";
-        cycle.textContent = `Seit letzter Ladung: ${formatNumber(session.cycle_km, 0)} km · ${formatNumber(session.cycle_used_pct, 0)} % Akku` +
-            (isNumber(session.cycle_kwh_100km) ? ` · ${formatNumber(session.cycle_kwh_100km, 1)} kWh/100 km` : " · zu kurz für einen Verbrauchswert");
-        card.appendChild(cycle);
-    }
+    card.innerHTML = `
+        <div class="charge-main">
+            <div class="charge-info">
+                <div class="charge-heading">
+                    <span class="charge-dot"></span>
+                    <span>${chargeType} Laden${placeLabel ? ` · ${escapeHtml(placeLabel)}` : ""}${statusText}${session.partial === true ? " · Teilaufzeichnung" : ""}</span>
+                </div>
+                <div class="charge-time">${startTime} → ${endTime} · ${formatDuration(session.duration_seconds)} aktiv${isNumber(session.connected_seconds) ? ` · ${formatDuration(session.connected_seconds)} angesteckt` : ""}</div>
+            </div>
+            <div class="distance" title="Geladene Energie im Akku (geschätzt aus Ladestand)">
+                <span class="distance-value">+${formatNumber(session.charged_energy_kwh, 1)}</span>
+                <span class="distance-unit">kWh</span>
+            </div>
+        </div>
+
+        ${chargeCostLine(session)}
+        ${gridText ? `<div class="charge-energy">${gridText}</div>` : ""}
+        ${cycleText ? `<div class="charge-energy">${cycleText}</div>` : ""}
+
+        <div class="facts">
+            <span class="fact" title="Akku +${formatNumber(chargedBatteryPct, 0)} %"><b>${formatNumber(session.start_battery_pct, 0)} → ${formatNumber(session.end_battery_pct, 0)}</b> %</span>
+            <span class="fact" title="Höchste von BMW gemeldete Ladeleistung">max <b>${formatNumber(session.max_power_kw, 1)}</b> kW</span>
+            ${averagePower ? `<span class="fact" title="Geladene kWh ÷ aktive Ladezeit">Ø <b>${formatNumber(averagePower, 1)}</b> kW</span>` : ""}
+            ${targetText ? `<span class="fact" title="Ladeziel im Auto">${targetText}</span>` : ""}
+            ${phaseCount > 1 ? `<span class="fact"><b>${phaseCount}</b> Ladephasen</span>` : ""}
+        </div>
+
+        <div class="battery-bar" title="Akku ${formatNumber(session.start_battery_pct, 0)} % → ${formatNumber(session.end_battery_pct, 0)} %">
+            <div class="battery-range ${typeClass}" style="left:${batteryLeft}%; width:${batteryWidth}%;"></div>
+        </div>
+    `;
+
+    if (!isNumber(session.start_battery_pct) || !isNumber(session.end_battery_pct)) card.querySelector(".battery-bar").hidden=true;
 
     if (session.session_id) {
         const curveSection = document.createElement("div");
         curveSection.className = "charge-curve-section";
         curveSection.innerHTML = `
             <button type="button" class="charge-curve-toggle" aria-expanded="false">
-                <span>Ladekurve anzeigen</span>
+                <span>Ladekurve</span>
                 <span class="charge-curve-chevron">⌄</span>
             </button>
             <div class="charge-curve-content" hidden>
@@ -1476,7 +1328,7 @@ function createChargingCard(session) {
             const open = toggle.getAttribute("aria-expanded") === "true";
             if (open) {
                 toggle.setAttribute("aria-expanded", "false");
-                toggle.querySelector("span").textContent = "Ladekurve anzeigen";
+                toggle.querySelector("span").textContent = "Ladekurve";
                 content.hidden = true;
                 return;
             }
